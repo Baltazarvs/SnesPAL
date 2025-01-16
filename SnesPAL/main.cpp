@@ -9,35 +9,45 @@
 #include "util.h"
 #include "resource.h"
 
-#define ID_FILE_NEW			10100
-#define ID_FILE_OPEN		10101
-#define ID_FILE_SAVE		10102
-#define ID_FILE_SAVE		10103
-#define ID_FILE_SAS			10104
-#define ID_FILE_EXIT		10105
-#define ID_HELP_ABOUT		10301
+#define ID_FILE_NEW					10100
+#define ID_FILE_OPEN				10101
+#define ID_FILE_SAVE				10102
+#define ID_FILE_SAVE				10103
+#define ID_FILE_SAS					10104
+#define ID_FILE_EXIT				10105
+#define ID_HELP_ABOUT				10301
 
-#define ID_BUTTON_CLOSE		20001
-#define ID_BUTTON_SHOW_GRID	20002
-#define ID_BUTTON_COPY_PAL	20003
+#define ID_BUTTON_CLOSE				20001
+#define ID_BUTTON_SHOW_GRID			20002
+#define ID_BUTTON_COPY_PAL			20003
+#define ID_BUTTON_DRAW_MODE			20004
 
 
 const byte r_col = 0x10, c_col = 0x10;
-static word pPaletteTable[r_col * c_col] = { 0x0000 };
-static word pPreservedCols[16] = { 0x0000 };
-static bool bDisplayGrid = false;
+static word pPaletteTable[r_col*c_col] = { 0x0000 };
+static word pPaletteHistory[(r_col*c_col)*5] = { 0x0000 };
+static COLORREF preservedCol = RGB(0x00, 0x00, 0x00);
+static word preservedColw = 0x0000;
+
+static COLORREF preservedCols[16];
 static HINSTANCE hInstance = GetModuleHandle(nullptr);
+static bool bDisplayGrid = false;
 static bool bFileOpened = false;
+static bool bDrawMode = false;
 static wchar_t pOpenedFilename[MAX_PATH] = { 0 };
 
 static bool bCursorInEditor = false;
+static bool bCursorInCustom = false;
 static HWND hMainWindow = nullptr;
 static HWND hPALEditor = nullptr;
 static HWND hGridCBX = nullptr;
-static HWND hStatusBar= nullptr;
+static HWND hStatusBar = nullptr;
+static HWND hCustomCol = nullptr;
+static HWND hCustomColTxt = nullptr;
 
 LRESULT __stdcall WndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT __stdcall SubclassProc_Editor(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+LRESULT __stdcall SubclassProc_CustomCol(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 LRESULT __stdcall DlgProc_CopyPAL(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam);
 LRESULT __stdcall DlgProc_About(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam);
 
@@ -48,6 +58,8 @@ int Loop();
 bool OpenPAL(const wchar_t* fn);
 bool SavePAL(const wchar_t* fn);
 void ShowGrid(bool bShow);
+void UpdateStatusInfo(const wchar_t* _1, const wchar_t* _2, const wchar_t* _3, const wchar_t* _4 = nullptr);
+
 word Color_ConvertToSNES(byte r, byte g, byte b);
 COLORREF Color_ConvertFromSNES(word rgb);
 word GetEditorPositionIndex(POINTS& pts);
@@ -106,10 +118,32 @@ int __stdcall wWinMain(HINSTANCE hInst, HINSTANCE, wchar_t*, int)
 
 LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
+	static HBRUSH hBrush = nullptr;
+	static HDC hdcMem;
+	static BITMAPINFOHEADER bi;
+	static HBITMAP hBitmap;
+	static RECT rect;
+	static int cxClient = 256, cyClient = 256;
+
 	switch (Msg)
 	{
 		case WM_CREATE:
 		{
+			hdcMem = CreateCompatibleDC(GetDC(hWnd));
+			bi.biSize = sizeof(BITMAPINFOHEADER);
+			bi.biWidth = cxClient = GetSystemMetrics(SM_CXSCREEN);
+			bi.biHeight = cyClient = GetSystemMetrics(SM_CYSCREEN);
+			bi.biPlanes = 1;
+			bi.biBitCount = 32;
+			bi.biCompression = BI_RGB;
+			bi.biSizeImage = 0;
+			bi.biXPelsPerMeter = 0;
+			bi.biYPelsPerMeter = 0;
+			bi.biClrUsed = 0;
+			bi.biClrImportant = 0;
+			hBitmap = CreateDIBSection(hdcMem, (BITMAPINFO*)&bi, DIB_RGB_COLORS, NULL, NULL, 0);
+			SelectObject(hdcMem, hBitmap);
+
 			RECT clRect;
 			GetClientRect(hWnd, &clRect);
 			int wWidth = clRect.right - clRect.left;
@@ -138,19 +172,35 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 			SetMenu(hWnd, hMb);
 
 			hPALEditor = CreateWindow(WC_STATIC, nullptr, WS_VISIBLE | WS_CHILD, 0, 0, 256, 256, hWnd, nullptr, nullptr, nullptr);
-			CreateWindow(WC_BUTTON, TEXT("Close"), WS_VISIBLE | WS_CHILD, 0, 256, 85, 30, hWnd, nullptr, nullptr, nullptr);
+			CreateWindow(WC_BUTTON, TEXT("Close"), WS_VISIBLE | WS_CHILD, 0, 256, 85, 30, hWnd, (HMENU)ID_BUTTON_CLOSE, nullptr, nullptr);
 			hGridCBX = CreateWindow(WC_BUTTON, TEXT("Show Grid"), WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 5, 286, 85, 30, hWnd, (HMENU)ID_BUTTON_SHOW_GRID, nullptr, nullptr);
+			CreateWindow(WC_BUTTON, TEXT("Draw Mode"), WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, 90, 286, 85, 30, hWnd, (HMENU)ID_BUTTON_DRAW_MODE, nullptr, nullptr);
 			CreateWindow(WC_BUTTON, TEXT("Copy Palette"), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 85, 256, 85, 30, hWnd, (HMENU)ID_BUTTON_COPY_PAL, nullptr, nullptr);
-			SetWindowSubclass(hPALEditor, &SubclassProc_Editor, 0u, 0u);
-
 			hStatusBar = CreateWindow(STATUSCLASSNAME, nullptr, WS_VISIBLE | WS_CHILD | SBARS_SIZEGRIP, 0, 0, 0, 0, hWnd, nullptr, nullptr, nullptr);
+			hCustomCol = CreateWindowEx(WS_EX_CLIENTEDGE, WC_STATIC, nullptr, WS_VISIBLE | WS_CHILD | WS_BORDER, 5, 320, 45, 45, hWnd, nullptr, nullptr, nullptr);
 
+			CreateWindow(WC_BUTTON, TEXT("Undo"), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 170, 256, 42, 30, hWnd, nullptr, nullptr, nullptr);
+			CreateWindow(WC_BUTTON, TEXT("Redo"), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 212, 256, 45, 30, hWnd, nullptr, nullptr, nullptr);
+
+			hCustomColTxt = CreateWindow(WC_STATIC, TEXT("$0000"), WS_VISIBLE | WS_CHILD, 12, 367, 35, 15, hWnd, nullptr, nullptr, nullptr);
+
+			SetWindowLongPtr(hPALEditor, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(hdcMem));
+
+			SetWindowSubclass(hPALEditor, &SubclassProc_Editor, 0u, 0u);
+			SetWindowSubclass(hCustomCol, &SubclassProc_CustomCol, 0u, 0u);
+			
 			std::vector<HWND> vecWindows;
 			EnumChildWindows(hWnd, &EnumProc_Main, reinterpret_cast<LPARAM>(&vecWindows));
 			HFONT hFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 			for (auto& hwnd : vecWindows)
 				SendMessage(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), static_cast<LPARAM>(true));
 
+			break;
+		}
+		case WM_CTLCOLORSTATIC:
+		{
+			HWND hControl = (HWND)lParam;
+			HDC hdc = (HDC)wParam;
 			break;
 		}
 		case WM_COMMAND:
@@ -168,7 +218,7 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					ofn.nMaxFile = MAX_PATH;
 					ofn.lpstrFile = buffer;
 					ofn.lpstrFile[0] = '\0';
-					ofn.lpstrFilter = L"TPL File\0*.tpl\0PAL File\0*.pal\0";
+					ofn.lpstrFilter = TEXT("PAL Palette\0*.pal\0TPL Palette\0*.tpl\0");
 					ofn.nFilterIndex = -1;
 					ofn.Flags = OFN_FILEMUSTEXIST | OFN_EXPLORER;
 
@@ -177,6 +227,10 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 						if (!OpenPAL(buffer))
 						{
 							ERROR_MBX(hWnd, TEXT("Cannot open requested file."))
+						}
+						else
+						{
+							SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("File opened successfully."));
 						}
 					}
 
@@ -205,6 +259,10 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 							{
 								ERROR_MBX(hWnd, TEXT("Cannot save requested file."))
 							}
+							else
+							{
+								SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("File saved."));
+							}
 						}
 
 						delete[] buffer;
@@ -215,6 +273,10 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 						if (!::SavePAL(nullptr))
 						{
 							ERROR_MBX(hWnd, TEXT("Cannot save requested file."))
+						}
+						else
+						{
+							SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("File saved."));
 						}
 					}
 					
@@ -257,6 +319,15 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 
 				case ID_BUTTON_CLOSE:
 				{
+					if (bFileOpened)
+					{
+						bFileOpened = false;
+						ZeroMemory(pOpenedFilename, sizeof(char)* MAX_PATH);
+						ZeroMemory(pPaletteTable, sizeof(word) * 256);
+						SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("File closed."));
+						SetWindowText(hWnd, TEXT("SnesPAL v1.00"));
+						RedrawPalettes();
+					}
 					break;
 				}
 				case ID_BUTTON_SHOW_GRID:
@@ -269,6 +340,19 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					DialogBox(hInstance, MAKEINTRESOURCE(IDD_COPYPAL), hWnd, &DlgProc_CopyPAL);
 					break;
 				}
+				case ID_BUTTON_DRAW_MODE:
+				{
+					bDrawMode = !bDrawMode;
+					if (bDrawMode)
+					{
+						UpdateStatusInfo(nullptr, nullptr, nullptr, TEXT("Drawing mode turned ON."));
+					}
+					else
+					{
+						UpdateStatusInfo(nullptr, nullptr, nullptr, TEXT("Drawing mode turned OFF."));
+					}
+					break;
+				}
 			}
 			break;
 		}
@@ -276,21 +360,54 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 		{
 			POINTS cursorPos = MAKEPOINTS(lParam);
 
-			if ((cursorPos.x > 0 && cursorPos.x < 256) && (cursorPos.y > 0 && cursorPos.y < 256))
-			{
-				// If cursor is withing editor bounds...
-				bCursorInEditor = true;
-				word indexes = GetEditorPositionIndex(cursorPos);
-				byte col = indexes, row = (indexes >> 8);
-				std::uint16_t singleIndex = row * 16 + col;
+			RECT wRectCC;
+			GetWindowRect(hCustomCol, &wRectCC);
 
-				wchar_t pStatusInfo[150];
-				wsprintf(pStatusInfo, TEXT("Palette [%02X]"), row);
-				wsprintf(pStatusInfo+50, TEXT("Color [%02X]: %04X"), col, pPaletteTable[singleIndex]);
-				wsprintf(pStatusInfo+100, TEXT("PAL-Index: [%02X]"), singleIndex);
-				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(0), (LPARAM)(pStatusInfo));
-				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(1), (LPARAM)(pStatusInfo+50));
-				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(2), (LPARAM)(pStatusInfo+100));
+			POINT pts;
+			GetCursorPos(&pts);
+
+			bool bChk = (pts.x >= wRectCC.left && pts.x <= wRectCC.right && pts.y >= wRectCC.top && pts.y <= wRectCC.bottom);
+			if (bChk)
+			{
+				bCursorInCustom = true;
+			}
+			else
+			{
+				bCursorInCustom = false;
+			}
+
+			if (((cursorPos.x > 0 && cursorPos.x < 256) && (cursorPos.y > 0 && cursorPos.y < 256)) || bChk)
+			{
+				if (bChk)
+				{
+					wchar_t pStr[14];
+					wsprintf(pStr, L"Color: $%04X", ::preservedColw);
+					UpdateStatusInfo(nullptr, pStr, nullptr);
+				}
+				else
+				{
+					// If cursor is withing editor bounds...
+					bCursorInEditor = true;
+					word indexes = GetEditorPositionIndex(cursorPos);
+					byte col = indexes, row = (indexes >> 8);
+					std::uint16_t singleIndex = row * 16 + col;
+
+					wchar_t pStatusInfo[150];
+					wsprintf(pStatusInfo, TEXT("Palette [%02X]"), row);
+					wsprintf(pStatusInfo + 50, TEXT("Color [%02X]: $%04X"), col, pPaletteTable[singleIndex]);
+					wsprintf(pStatusInfo + 100, TEXT("PAL-Index: [%02X]"), singleIndex);
+					UpdateStatusInfo(pStatusInfo, pStatusInfo + 50, pStatusInfo + 100);
+
+					if (wParam & MK_LBUTTON)
+					{
+						if (bDrawMode)
+						{
+							pPaletteTable[singleIndex] = ::preservedColw;
+							InvalidateRect(hPALEditor, nullptr, TRUE);
+							UpdateWindow(hPALEditor);
+						}
+					}
+				}
 			}
 			else
 			{
@@ -298,6 +415,7 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(0), (LPARAM)(nullptr));
 				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(1), (LPARAM)(nullptr));
 				SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(2), (LPARAM)(nullptr));
+				UpdateStatusInfo(nullptr, nullptr, nullptr);
 			}
 			break;
 		}
@@ -311,8 +429,61 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				byte col = indexes, row = (indexes >> 8);
 				int index = row * 16 + col;
 
-				word currCol = pPaletteTable[index];
+				word currCol = 0x0000;
+				
+				if (bDrawMode)
+				{
+					pPaletteTable[index] = ::preservedColw;
+					InvalidateRect(hPALEditor, nullptr, TRUE);
+					UpdateWindow(hPALEditor);
+				}
+				else
+				{
+					currCol = pPaletteTable[index];
+				}
 				break;
+			}
+			if (bCursorInCustom)
+			{
+				CHOOSECOLOR cc;
+				ZeroMemory(&cc, sizeof(cc));
+				cc.lStructSize = sizeof(CHOOSECOLOR);
+				cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+				cc.hwndOwner = GetParent(hWnd);
+				cc.hInstance = nullptr;
+				cc.lpCustColors = ::preservedCols;
+				if (ChooseColor(&cc))
+				{
+					::preservedCol = cc.rgbResult;
+					::preservedColw = Color_ConvertToSNES(GetRValue(cc.rgbResult), GetGValue(cc.rgbResult), GetBValue(cc.rgbResult));
+					InvalidateRect(hCustomCol, nullptr, TRUE);
+					UpdateWindow(hCustomCol);
+
+					wchar_t pStr[6];
+					wsprintf(pStr, L"$%04X", ::preservedColw);
+					SetWindowText(hCustomColTxt, pStr);
+				}
+			}
+			break;
+		}
+		case WM_RBUTTONDOWN:
+		{
+			if (bCursorInEditor)
+			{
+				POINTS cursorPos = MAKEPOINTS(lParam);
+				word indexes = GetEditorPositionIndex(cursorPos);
+				byte col = indexes, row = (indexes >> 8);
+				int index = row * 16 + col;
+
+				preservedCol = Color_ConvertFromSNES(pPaletteTable[index]);
+				preservedColw = pPaletteTable[index];
+
+				InvalidateRect(hCustomCol, nullptr, TRUE);
+				UpdateWindow(hCustomCol);
+
+				wchar_t pStr[6];
+				wsprintf(pStr, L"$%04X", ::preservedColw);
+				SetWindowText(hCustomColTxt, pStr);
 			}
 			break;
 		}
@@ -337,6 +508,7 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 		case WM_DESTROY:
 		{
 			RemoveWindowSubclass(hPALEditor, &SubclassProc_Editor, 0u);
+			RemoveWindowSubclass(hCustomCol, &SubclassProc_CustomCol, 0u);
 			PostQuitMessage(0);
 			break;
 		}
@@ -348,13 +520,19 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 
 LRESULT __stdcall SubclassProc_Editor(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR)
 {
+	HDC hdcMem = (HDC)GetWindowLongPtr(hWnd, GWLP_USERDATA);
 	switch (Msg)
 	{
+		case WM_CREATE:
+		{
+			break;
+		}
 		case WM_PAINT:
 		{
 			PAINTSTRUCT ps;
 			BeginPaint(hWnd, &ps);
-			DrawToEditor(ps.hdc);
+			DrawToEditor(hdcMem);
+			BitBlt(ps.hdc, 0, 0, 256, 256, hdcMem, 0, 0, SRCCOPY);
 			EndPaint(hWnd, &ps);
 			break;
 		}
@@ -362,6 +540,30 @@ LRESULT __stdcall SubclassProc_Editor(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM
 			return DefSubclassProc(hWnd, Msg, wParam, lParam);
 	}
 	return 0;
+}
+
+LRESULT __stdcall SubclassProc_CustomCol(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR)
+{
+	switch (Msg)
+	{
+		case WM_PAINT:
+		{
+			RECT clRect;
+			GetClientRect(hWnd, &clRect);
+			PAINTSTRUCT ps;
+			BeginPaint(hWnd, &ps);
+			word snesCol = Color_ConvertToSNES(GetRValue(preservedCol), GetGValue(preservedCol), GetBValue(preservedCol));
+			HBRUSH hbr = CreateSolidBrush(preservedCol);
+			HBRUSH hbrOld = (HBRUSH)SelectObject(ps.hdc, hbr);
+			FillRect(ps.hdc, &clRect, hbr);
+			SelectObject(ps.hdc, hbrOld);
+			DeleteObject(hbr);
+			EndPaint(hWnd, &ps);
+			break;
+		}
+		default:
+			return DefSubclassProc(hWnd, Msg, wParam, lParam);
+	}
 }
 
 LRESULT __stdcall DlgProc_CopyPAL(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam)
@@ -410,7 +612,7 @@ LRESULT __stdcall DlgProc_CopyPAL(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lPa
 					memcpy(palSrc, pPaletteTable+realSrcIndex,  sizeof(word) * 0x10);
 					memcpy(pPaletteTable+realDestIndex, palSrc, sizeof(word) * 0x10);
 					RedrawPalettes();
-
+					SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("Palette copied."));
 				}
 				case IDCANCEL:
 				{
@@ -428,6 +630,9 @@ LRESULT __stdcall DlgProc_About(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lPara
 {
 	switch (Msg)
 	{
+		case WM_INITDIALOG:
+			SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)TEXT("Displaying about."));
+			break;
 		case WM_COMMAND:
 		case WM_CLOSE:
 			EndDialog(hDlg, 0);
@@ -507,6 +712,14 @@ bool OpenPAL(const wchar_t* fn)
 		else if (!wcscmp(ext, L"tpl"))
 		{
 			// Load TPL...
+			byte signature[4];
+			fread(signature, sizeof(byte) * 4, 1, file);
+			word palData[256];
+			ZeroMemory(palData, sizeof(word) * 256);
+			fread(pPaletteTable, sizeof(word), 256, file);
+			RedrawPalettes();
+			::bFileOpened = true;
+			wcscpy(::pOpenedFilename, fn);
 		}
 		fclose(file);
 		return true;
@@ -579,6 +792,19 @@ void ShowGrid(bool bShow)
 	return;
 }
 
+void UpdateStatusInfo(const wchar_t* _1, const wchar_t* _2, const wchar_t* _3, const wchar_t* _4)
+{
+	if (_4)
+	{
+		// Info is used without other statuses...
+		SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(3), (LPARAM)(_4));
+		return;
+	}
+	SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(0), (LPARAM)(_1));
+	SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(1), (LPARAM)(_2));
+	SendMessage(hStatusBar, SB_SETTEXT, (WPARAM)LOBYTE(2), (LPARAM)(_3));
+}
+
 void DrawToEditor(HDC hdc)
 {
 	word rowDown = 0;
@@ -598,6 +824,9 @@ void DrawToEditor(HDC hdc)
 		{
 			// Get current color from table.
 			word currCol = pPaletteTable[y * 0x10 + x];
+			if (x == 0)
+				currCol = 0x0000;
+
 			// Create brush based on that color.
 			HBRUSH hbr = CreateSolidBrush(Color_ConvertFromSNES(currCol));
 			// Calculate each palette color rect dimensions.
