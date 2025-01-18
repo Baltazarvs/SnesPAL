@@ -251,20 +251,37 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				ppp.x = 0x10*0x03;
 				ppp.y = 0x10*i+8;
 
+				word indexes = GetEditorPositionIndex(ppp);
+				byte col = indexes, row = (indexes >> 8);
+				std::uint16_t singleIndex = row * 0x10 + col;
+				word* pFirst = &pPaletteTable[(singleIndex - 0x10) + (ppp.x / 3) - 1];
+				word* pLast = pFirst + 0x0D;
+
+				bool bPlus = (LOWORD(wParam) == (ID_BUTTON_SIDE_PLUS + i));
+				bool bMinus = (LOWORD(wParam) == (ID_BUTTON_SIDE_MINUS + i));
+
 				if (LOWORD(wParam) == (ID_BUTTON_SIDE_ROTATE+i))
 				{
-					// TODO:
-					word indexes = GetEditorPositionIndex(ppp);
-					byte col = indexes, row = (indexes >> 8);
-					std::uint16_t singleIndex = row * 0x10 + col;
-
-					word* pFirst = &pPaletteTable[(singleIndex-0x10)+(ppp.x / 3) - 1];
-					word* pLast = pFirst+0x0D;
 					word firstVal = *pFirst;
-
 					for (int j = 0; j < 0x0D; ++j)
 						pFirst[j] = pFirst[j+1];
 					*pLast = firstVal;
+					RedrawPalettes();
+					break;
+				}
+				else if (bPlus || bMinus)
+				{
+					for (int j = 0; j < 0x0D; ++j)
+					{
+						COLORREF rgb = Color_ConvertFromSNES(pFirst[j]);
+						byte r = GetRValue(rgb), g = GetGValue(rgb), b = GetBValue(rgb);
+						byte nr = 0x00, ng = 0x00, nb = 0x00;
+						if(bPlus)
+							nr = (byte)min(r + 0x02, 0xFF), ng = (byte)min(g + 0x02, 0xFF), nb = (byte)min(b + 0x02, 0xFF);
+						else
+							nr = (byte)min(r - 0x02, 0xFF), ng = (byte)min(g - 0x02, 0xFF), nb = (byte)min(b - 0x02, 0xFF);
+						pFirst[j] = Color_ConvertToSNES(nr, ng, nb);
+					}
 					RedrawPalettes();
 				}
 			}
