@@ -23,7 +23,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <string>
+#include <sstream>
 #include <vector>
+#include <deque>
 
 #define LP_CLASS_NAME TEXT("SnesPAL")
 #define ERROR_MBX(parent,msg) MessageBox(parent, msg, L"ERROR", MB_OK | MB_ICONERROR);
