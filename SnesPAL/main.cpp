@@ -56,6 +56,7 @@ HWND hCustomCol = nullptr;
 HWND hCustomColTxt = nullptr;
 HWND hCbxDraw = nullptr;
 HWND hUndo = nullptr, hRedo = nullptr;
+HWND hToolTip = nullptr; wchar_t pTooltipText[7] = TEXT("FFFFFF");
 
 LRESULT __stdcall WndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT __stdcall SubclassProc_Editor(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -222,6 +223,14 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				CreateWindow(WC_BUTTON, TEXT("-"), WS_VISIBLE | WS_CHILD, 256 + 32, 16 * i, 16, 16, hWnd, (HMENU)(ID_BUTTON_SIDE_MINUS+i), nullptr, nullptr);
 			}
 
+			hToolTip = CreateWindowEx(0, TOOLTIPS_CLASS, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_BALLOON, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hPALEditor, nullptr, nullptr, nullptr);
+			TOOLINFO toolInfo = { 0 };
+			toolInfo.cbSize = sizeof(toolInfo);
+			toolInfo.hwnd = hPALEditor;
+			toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+			toolInfo.uId = (UINT_PTR)hToolTip;
+			toolInfo.lpszText = pTooltipText;
+			SendMessage(hToolTip, TTM_ADDTOOL, 0, (LPARAM)&toolInfo);
 
 			SetWindowLongPtr(hPALEditor, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(hdcMem));
 
@@ -251,14 +260,14 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 				ppp.x = 0x10*0x03;
 				ppp.y = 0x10*i+8;
 
+				bool bPlus = (LOWORD(wParam) == (ID_BUTTON_SIDE_PLUS + i));
+				bool bMinus = (LOWORD(wParam) == (ID_BUTTON_SIDE_MINUS + i));
+
 				word indexes = GetEditorPositionIndex(ppp);
 				byte col = indexes, row = (indexes >> 8);
 				std::uint16_t singleIndex = row * 0x10 + col;
 				word* pFirst = &pPaletteTable[(singleIndex - 0x10) + (ppp.x / 3) - 1];
 				word* pLast = pFirst + 0x0D;
-
-				bool bPlus = (LOWORD(wParam) == (ID_BUTTON_SIDE_PLUS + i));
-				bool bMinus = (LOWORD(wParam) == (ID_BUTTON_SIDE_MINUS + i));
 
 				if (LOWORD(wParam) == (ID_BUTTON_SIDE_ROTATE+i))
 				{
@@ -269,19 +278,21 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					RedrawPalettes();
 					break;
 				}
-				else if (bPlus || bMinus)
+				else if (bMinus || bPlus)
 				{
-					for (int j = 0; j < 0x0D; ++j)
+					for (int j = 0; j < 0x0E; ++j)
 					{
 						COLORREF rgb = Color_ConvertFromSNES(pFirst[j]);
-						byte r = GetRValue(rgb), g = GetGValue(rgb), b = GetBValue(rgb);
-						byte nr = 0x00, ng = 0x00, nb = 0x00;
-						if(bPlus)
-							nr = (byte)min(r + 0x02, 0xFF), ng = (byte)min(g + 0x02, 0xFF), nb = (byte)min(b + 0x02, 0xFF);
+						byte r = (bPlus ? min(GetRValue(rgb) + 0x0F, 0xFF) : max(GetRValue(rgb) + 0x0F, 0x01));
+						byte g = (bPlus ? min(GetGValue(rgb) + 0x0F, 0xFF) : max(GetGValue(rgb) + 0x0F, 0x01));
+						byte b = (bPlus ? min(GetBValue(rgb) + 0x0F, 0xFF) : max(GetBValue(rgb) + 0x0F, 0x01));
+						word newSnesCol = Color_ConvertToSNES(r, g, b);
+						if(newSnesCol == 0xFFFF)
+							pFirst[j] = 0x0000;
 						else
-							nr = (byte)min(r - 0x02, 0xFF), ng = (byte)min(g - 0x02, 0xFF), nb = (byte)min(b - 0x02, 0xFF);
-						pFirst[j] = Color_ConvertToSNES(nr, ng, nb);
+							pFirst[j] = (word)min(newSnesCol, 0x7FFF);
 					}
+					RecordOperation(TEXT("Increased brightness."));
 					RedrawPalettes();
 				}
 			}
@@ -442,7 +453,6 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					{
 						auto oper = lastOperations.back();
 						memcpy(pPaletteTable, oper.palette, sizeof(word) * 0x100);
-						RedrawPalettes();
 						::bDrawMode = oper.bDrawMode;
 						Button_SetCheck(hCbxDraw, ::bDrawMode);
 						lastOperations.pop_back();
@@ -451,6 +461,7 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 						UpdateStatusInfo(nullptr, nullptr, nullptr, statMsg.c_str());
 						Button_Enable(hRedo, TRUE);
 						if (lastOperations.empty()) Button_Enable(hUndo, FALSE);
+						RedrawPalettes();
 					}
 					break;
 				}
@@ -460,7 +471,6 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					{
 						auto oper = lastOperationsRedo.back();
 						memcpy(pPaletteTable, oper.palette, sizeof(word) * 0x100);
-						RedrawPalettes();
 						UpdateStatusInfo(nullptr, nullptr, nullptr, oper.info.c_str());
 						::bDrawMode = oper.bDrawMode;
 						Button_SetCheck(hCbxDraw, ::bDrawMode);
@@ -470,6 +480,7 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 						UpdateStatusInfo(nullptr, nullptr, nullptr, statMsg.c_str());
 						Button_Enable(hUndo, TRUE);
 						if (lastOperationsRedo.empty()) Button_Enable(hRedo, FALSE);
+						RedrawPalettes();
 					}
 					break;
 				}
@@ -517,6 +528,8 @@ LRESULT __stdcall WndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 					wsprintf(pStatusInfo + 50, TEXT("Color [%02X]: $%04X"), col, pPaletteTable[singleIndex]);
 					wsprintf(pStatusInfo + 100, TEXT("PAL-Index: [%02X]"), singleIndex);
 					UpdateStatusInfo(pStatusInfo, pStatusInfo + 50, pStatusInfo + 100);
+
+					wsprintf(pTooltipText, L"%06X", Color_ConvertFromSNES(pPaletteTable[singleIndex]));
 
 					if (wParam & MK_LBUTTON)
 					{
@@ -1064,7 +1077,7 @@ void RedrawPalettes(bool bChanged)
 
 word Color_ConvertToSNES(byte r, byte g, byte b)
 {
-	word outCol = (b >> 3) << 10 | (g >> 3) << 5 | (r >> 3);
+	word outCol = min((b >> 3) << 10 | (g >> 3) << 5 | (r >> 3), 0x7FFF);
 	return outCol;
 }
 
@@ -1100,6 +1113,7 @@ void RecordOperation(const wchar_t* pInfo)
 	lastOperations.push_back(lastOper);
 	lastOperationsRedo.clear();
 	Button_Enable(hUndo, TRUE);
+	Button_Enable(hRedo, FALSE);
 	return;
 }
 
